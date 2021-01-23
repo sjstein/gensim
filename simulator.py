@@ -18,7 +18,13 @@ class GenSimulator:
     gen_ip_num = '192.168.1.121'
     gen_inp_port = 55556
     gen_out_port = 55555
+
+    amp_hours = 0
     beam_value = 0
+    board_temp = 32.5
+    current_state = 32
+    duty_factor = 0
+    faults = True
     pulse_freq = 5000
     pulse_width = 0
     pulse1_delay = 0
@@ -27,30 +33,35 @@ class GenSimulator:
     pulse2_width = 0
     pulse3_delay = 0
     pulse3_width = 0
-    duty_factor = 0
-    current_state = 32
+    run_hours = 0
+    tube_pres = 120.003
+    tube_temp = 21.99
 
+    msg_list = []
 
     def __init__(self, gen_type='MINI', tube_str='235DT'):
         self.gen_type = gen_type
         self.tube_str = tube_str
 
-    def exec_func(self, inst_lst):
-        func = getattr(self, inst_lst.pop(0))
-        print(f'In exec_func, called with: {inst_lst} and func = {func}')
-        return func(inst_lst)
+    def exec_func(self):
+        cmd = self.msg_list.pop(0)
+        try:
+            func = getattr(self, cmd)
+        except AttributeError:
+            print(f'Generator simulation: unknown message received: {cmd}')
+            func = getattr(self, 'null_cmd')
+        return func()
 
     def run_simulation(self):
         import re
         import socket
         import time
 
+        resp_list = []
+
         in_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         in_sock.bind((self.gen_ip_num, self.gen_inp_port))
-
-        faults = True  # Set this to True to indicate generator fault(s)
-        # Modify this to simulate different types of faults represented by status bits
 
         def strip_msg(bdata):
             sdata = bdata.decode('UTF-8')
@@ -63,7 +74,7 @@ class GenSimulator:
             respstr = f'{seq} {message}#{chk[2:].zfill(2)}\r'
             # respstr = f'{seq}{message}#{chk}\r\x00'
             respbytes = respstr.encode('utf-8')  # Convert string to byte object
-            print(f'Sending {respbytes} to {addr}')
+            # print(f'Sending {respbytes} to {addr}')
             out_sock.sendto(respbytes, (addr, self.gen_out_port))
 
         def generate_checksum(message):
@@ -75,41 +86,41 @@ class GenSimulator:
 
         while True:
             data, addr = in_sock.recvfrom(1024)  # BLOCKING READ
-            seq, msg = strip_msg(data)
-            # print(f'{addr[0]} sent msg: {data} extracted to: {msg} with seq: {seq}')
-            print(f'Received : {seq} : {msg} ({type(msg)})')
-            # print(f'msg checksum = {generate_checksum(seq+msg)}')
+            seq, self.msg_list = strip_msg(data)
+            # print(f'Received : {seq} : {self.msg_list}')
             time.sleep(0.05)  # Delay response from command just a bit
-            while len(msg) > 0:
-                print(f'calling exec_func({msg})')
-                resp = self.exec_func(msg)
-                send_msg(resp, addr[0], seq)
+            resp_list.clear()
+            while len(self.msg_list) > 0:
+                resp_list.append(self.exec_func())
+            if len(resp_list) > 1:
+                resp = ' '.join(resp_list)
+            else:
+                resp = resp_list[0]
+            send_msg(resp, addr[0], seq)
 
-
-    def U(self, cmd_lst):
+    def null_cmd(self):
         """
-        This is a weird undocumented command
+        Entrypoint for all unknown commands
+        :return:
         """
-        if cmd_lst.pop(0) == 'TMFP':
-            return '1'
-
-    def SUT(self, cmd_lst):
-        """
-        Sets the auto shut down time (if enabled) in seconds.
-        :param cmd_lst[0]:
-        :return: '0'
-        """
-        parm = cmd_lst.pop(0)
-        # Do something with parm to affect simulation
         return '0'
 
-    def MBC(self):
+    def C(self):
         """
-        Monitor Beam Current
+        Clear faults
+        :return:
+        """
+        self.faults = False
+        self.current_state = 256
+        return '0'
+
+    def MAH(self):
+        """
+        Monitor Amp Hours
 
         Returns float
         """
-        return '0.000'
+        return f'{self.amp_hours}'
 
     def MAV(self):
         """
@@ -120,6 +131,82 @@ class GenSimulator:
         """
         return '0.000'
 
+    def MBC(self):
+        """
+        Monitor Beam Current
+
+        Returns float
+        """
+        return '0.000'
+
+    def MEI(self):
+        """
+        Unknown command
+        :return:
+        """
+        return '27.0'
+
+    def MF1(self):
+        """
+        Monitor Fault Analysis word 1
+        """
+        return '0'
+
+    def MF2(self):
+        """
+        Monitor Fault Analysis word 2
+        """
+        return '0'
+
+    def MF3(self):
+        """
+        Monitor Fault Analysis word 3
+        """
+        return '0'
+
+    def MF4(self):
+        """
+        Monitor Fault Analysis word 4
+        """
+        return '0'
+
+    def MF5(self):
+        """
+        Monitor Fault Analysis word 5
+        """
+        return '0'
+
+    def MF6(self):
+        """
+        Monitor Fault Analysis word 6
+        """
+        return '0'
+
+    def MFA(self):
+        """
+        Monitor Fault Analysis
+        """
+        return '0x0000 0x0000 0x0000 0x0000 0x0000 0x0000'
+
+    def MFG(self):
+        """
+        """
+        if self.faults:
+            return '1'
+        else:
+            return '0'
+
+    def MH(self):
+        """
+        Monitor Hours
+
+        Returns float
+        """
+        return f'{self.run_hours}'
+
+    def MP(self):
+        return f'{self.current_state}'
+
     def MRC(self):
         """
         Monitor Reservoir Current
@@ -129,46 +216,34 @@ class GenSimulator:
         """
         return '0.000'
 
-    def MFA(self):
+    def MTC(self):
         """
-        Monitor Fault Analysis
+        Monitor Temperature Controller
+        :return:
         """
-        return '0x0000 0x0000 0x0000 0x0000 0x0000 0x0000'
+        return f'{self.board_temp}'
 
-    def MF1(self):
+    def MTP(self):
         """
-        Monitor Fault Analysis
+        Monitor Tube Temperature
+        :return:
         """
-        return '0'
+        return f'{self.tube_pres}'
 
-    def MF2(self):
+    def MTT(self):
         """
-        Monitor Fault Analysis
+        Monitor Tube Temperature
+        :return:
         """
-        return '0'
+        return f'{self.tube_temp}'
 
-    def MF3(self):
+    def Q(self):
         """
-        Monitor Fault Analysis
+        Quit (emergency shutdown - generate a fault)
+        :return:
         """
-        return '0'
-
-    def MF4(self):
-        """
-        Monitor Fault Analysis
-        """
-        return '0'
-
-    def MF5(self):
-        """
-        Monitor Fault Analysis
-        """
-        return '0'
-
-    def MF6(self):
-        """
-        Monitor Fault Analysis
-        """
+        self.faults = True
+        self.current_state = 32
         return '0'
 
     def RCAT(self):
@@ -178,22 +253,38 @@ class GenSimulator:
         """
         return f'TUBE{self.tube_str}'
 
-    def SBV(self, cmd_lst):
-        self.beam_value = int(cmd_lst.pop(0))
-        # Do something with parm to affect simulation
-        return '0'
-
-    def RPF(self):
-        return f'{self.pulse_freq}'
-
-    def RPD(self):
-        return f'{self.duty_factor}'
-
     def RP1D(self):
         return f'{self.pulse1_delay}'
 
     def RP1W(self):
         return f'{self.pulse1_width}'
 
-    def MP(self):
-        return f'{self.current_state}'
+    def RPD(self):
+        return f'{self.duty_factor}'
+
+    def RPF(self):
+        return f'{self.pulse_freq}'
+
+    def SBV(self):
+        self.beam_value = int(self.msg_list.pop(0))
+        # Do something with parm to affect simulation
+        return '0'
+
+    def SUT(self):
+        """
+        Sets the auto shut down time (if enabled) in seconds.
+        """
+        parm = self.msg_list.pop(0)
+        # Do something with parm to affect simulation
+        return '0'
+
+    def U(self):
+        """
+        User mode
+        """
+        if self.msg_list.pop(0) == 'TMFP':
+            return '1'
+        else:
+            return '0'
+
+
