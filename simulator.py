@@ -103,7 +103,7 @@ class GenSimulator:
         self.accel_voltage_ramping = False
         self.accel_current_ramping = False
         self.getter_current_ramping = False
-        self.start_time = None
+        self.start_time = 0
         self.orig_seconds = self.run_seconds
 
         def mf_method_factory(name, i):
@@ -370,9 +370,10 @@ class GenSimulator:
                     setattr(self, parm[6:].lower(), curr_val - self.analog_noise(self.ENV_NOISE))
                 else:
                     setattr(self, parm[6:].lower(), curr_val + self.analog_noise(self.ENV_NOISE))
-        if self.system_state== self.SYSTEM_STATE_RUNNING:
+        if (self.system_state == self.SYSTEM_STATE_RUNNING) & (time.time() > self.start_time):
             self.run_seconds += int(time.time()) - self.start_time
             self.amp_hours += int((int(time.time()) - self.start_time) * self.accel_current)
+            self.start_time = int(time.time())
 
     def check_system_state(self):
         """
