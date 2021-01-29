@@ -16,8 +16,8 @@ class GenSimulator:
         # Below attributes correspond to device parameters
         self.accel_current = 0.0
         self.accel_voltage = 0.0
-        self.amp_hours = 0.0
-        self.board_temp = 0.0
+        self.amp_hours = 0
+        self.board_temp = 28
         self.system_state = 32
         self.fault_1 = 0x02  # External interlock fault
         self.fault_2 = 0x00
@@ -27,7 +27,7 @@ class GenSimulator:
         self.fault_6 = 0x00
         self.getter_current = 0.0
         self.high_voltage = 0
-        self.input_emf = 0.0
+        self.input_emf = 26
         self.pulse_duty_cycle = 20
         self.pulse_freq = 5000
         self.pulse_width = 0
@@ -40,8 +40,8 @@ class GenSimulator:
         self.run_seconds = 0
         self.shutdown_time = 0
         self.system_locked = True
-        self.tube_pres = 0.0
-        self.tube_temp = 0.0
+        self.tube_pres = 120
+        self.tube_temp = 26
 
         # Device constants
         if gen_type == 'MINI':
@@ -87,8 +87,6 @@ class GenSimulator:
         self.GETTER_CURRENT_NOISE = 0.1
         self.ENV_NOISE = 0.1
 
-
-
         # Simulator specific attributes
         self.faults = True
         self.msg_list = []
@@ -105,6 +103,8 @@ class GenSimulator:
         self.accel_voltage_ramping = False
         self.accel_current_ramping = False
         self.getter_current_ramping = False
+        self.start_time = None
+        self.orig_seconds = self.run_seconds
 
         def mf_method_factory(name, i):
             """
@@ -129,7 +129,11 @@ class GenSimulator:
                     (int) a
                 """
                 MFn_template.__name__ = name
-                return str(getattr(self, f'fault_{i}'))
+                try:
+                    return str(getattr(self, f'fault_{i}'))
+                except Exception as e:
+                    print(f'Exception in generated function : {name}')
+                    raise e
             return MFn_template
 
         def sp_method_factory(name, i, p):
@@ -159,18 +163,18 @@ class GenSimulator:
                    xxx.xxx (?????)
                 """
                 SPnp_template.__name__ = name
-                print(f'Inside {SPnp_template.__name__} with msg: {self.msg_list}')
-                if p == 'D':
-                    val = float(self.msg_list.pop())
-                    setattr(self, f'pulse{i}_delay', val)
-                else:
-                # Something is very odd in the format of the message being sent here from the ANL client
-                # So I'm pop(ing) the messages off from the back in here
-                # This kind of breaks the model of being able to stack commands in one msg, so needs
-                # to be addressed better.
-                    val = float(self.msg_list.pop())
-                    setattr(self, f'pulse{i}_width', val)
-                return str(val)
+                #print(f'Inside {SPnp_template.__name__} with msg: {self.msg_list}')
+                try:
+                    if p == 'D':
+                        val = float(self.msg_list.pop(0))
+                        setattr(self, f'pulse{i}_delay', val)
+                    else:
+                        val = float(self.msg_list.pop(0))
+                        setattr(self, f'pulse{i}_width', val)
+                    return str(val)
+                except Exception as e:
+                    print(f'Exception in generated function : {name}')
+                    raise e
             return SPnp_template
 
         # Create methods based on factory templates
@@ -184,10 +188,18 @@ class GenSimulator:
             name = f'MF{i}'
             setattr(self, name, mf_method_factory(name, i))
 
-        # Check for saved attributes like hours (hobbs) and amp-hour values
-        # If it does not exist, create with filename = tubestr_info.txt
-        # If it does exist, read the startup values for hours and amp-hours
-
+        try:
+            f = open(f'{self.tube_str}_info.txt', 'r')
+            nfo = f.readline().split()
+            self.run_seconds = self.orig_seconds = int(nfo[0])
+            self.amp_hours = int(nfo[1])
+            print(f'Generator info found for tube {self.tube_str}: {self.run_seconds} , '
+                  f'{self.amp_hours}')
+            f.close()
+        except FileNotFoundError:
+            f = open(f'{self.tube_str}_info.txt', 'w')
+            f.write(f'{self.run_seconds} {self.amp_hours}')
+            f.close()
 
     def analog_noise(self, noise):
         """
@@ -222,7 +234,7 @@ class GenSimulator:
             sdata = bdata.decode('UTF-8')
             pat = re.compile('\$[a-z](.+?)#')  # Match all characters between $? and #
             m = pat.match(sdata)
-            return m.group(0)[1], m.group(1).split(' ')
+            return m.group(0)[1], m.group(1).split()
 
         def send_msg(message, addr, seq):
             chk = generate_checksum(seq + ' ' + message)
@@ -243,7 +255,7 @@ class GenSimulator:
             data, addr = in_sock.recvfrom(1024)  # BLOCKING READ
             seq, self.msg_list = strip_msg(data)
             if self.debug:
-                print(f'Received : {seq} : {self.msg_list}')
+                print(f'Received : {seq} : {self.msg_list} extracted from {data}')
             #time.sleep(0.05)  # Delay response from command just a bit
             resp_list.clear()
             while len(self.msg_list) > 0:
@@ -278,6 +290,7 @@ class GenSimulator:
             self.getter_current_sp = self.GETTER_RAMP
             self.neutrons_ramping_up = False
             self.neutrons_on = True
+            self.start_time = int(time.time())
             return
         if self.neutrons_on:
             self.accel_voltage_sp = self.accel_voltage_set
@@ -300,7 +313,12 @@ class GenSimulator:
         if not self.neutrons_ramping_up and not self.neutrons_ramping_down:
             self.system_state = self.SYSTEM_STATE_IDLE
             self.getter_current_sp = self.GETTER_IDLE
-
+        if self.system_state != self.SYSTEM_STATE_RUNNING:
+            if self.run_seconds != self.orig_seconds:
+                f = open(f'{self.tube_str}_info.txt', 'w')
+                f.write(f'{self.run_seconds} {self.amp_hours}')
+                f.close()
+                self.orig_seconds = self.run_seconds
         return
     
     def svc_accel_current(self):
@@ -333,22 +351,28 @@ class GenSimulator:
                 self.getter_current -= self.analog_noise(self.GETTER_CURRENT_NOISE)  # Wiggle the value a little
             else:
                 self.getter_current += self.analog_noise(self.GETTER_CURRENT_NOISE)  # Wiggle the value a little
-        elif self.system_state == self.SYSTEM_STATE_IDLE:
-            self.getter_current = self.getter_current_sp
+        else:
+            if self.getter_current > self.getter_current_sp:
+                self.getter_current -= self.analog_noise(self.GETTER_CURRENT_NOISE*.5)  # Wiggle the value a little
+            else:
+                self.getter_current += self.analog_noise(self.GETTER_CURRENT_NOISE*.5)  # Wiggle the value a little
         return
 
     def svc_environment(self):
+        import time
+
         for parm in ['IDEAL_BOARD_TEMP', 'IDEAL_TUBE_PRES', 'IDEAL_TUBE_TEMP', 'IDEAL_INPUT_EMF']:
             # Not crazy about hard-coding these constants like this^^
             sp = float(getattr(self, parm))
             curr_val = float(getattr(self, parm[6:].lower()))
-            if self.analog_noise(1) > 0.7:  # Don't update values at every iteration
+            if self.analog_noise(1) > 0.8:  # Don't update values at every iteration
                 if curr_val > sp:
                     setattr(self, parm[6:].lower(), curr_val - self.analog_noise(self.ENV_NOISE))
                 else:
                     setattr(self, parm[6:].lower(), curr_val + self.analog_noise(self.ENV_NOISE))
-        # Check to see if generator is ON and if so, increment the hours and amp-hours attributes
-        # Write this to a file upon going from RUN/ON mode to IDLE or FAULT(?)
+        if self.system_state== self.SYSTEM_STATE_RUNNING:
+            self.run_seconds += int(time.time()) - self.start_time
+            self.amp_hours += int((int(time.time()) - self.start_time) * self.accel_current)
 
     def check_system_state(self):
         """
