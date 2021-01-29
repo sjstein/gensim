@@ -3,8 +3,6 @@ import threading
 import time
 
 mini = simulator.GenSimulator()
-mini.amp_hours = 10
-mini.run_hours = 15
 
 
 print(f'simulator {mini} info: ip = {mini.gen_ip_num}, tube info = {mini.tube_str}')
