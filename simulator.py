@@ -73,9 +73,9 @@ class GenSimulator:
         self.SYSTEM_STATE_TEST = 0x8000
         # quiescent / transient values
         self.IDEAL_TUBE_PRES = 120.003
-        self.IDEAL_TUBE_TEMP = 21.99
+        self.IDEAL_TUBE_TEMP = 36.0
         self.IDEAL_INPUT_EMF = 24.0
-        self.IDEAL_BOARD_TEMP = 32.5
+        self.IDEAL_BOARD_TEMP = 39.0
 
         self.GETTER_IDLE = 1.5
         self.GETTER_RAMP = 2.6
@@ -85,9 +85,11 @@ class GenSimulator:
         self.ACCEL_CURRENT_NOISE = 4
         self.ACCEL_VOLTAGE_NOISE = 2
         self.GETTER_CURRENT_NOISE = 0.1
-        self.ENV_NOISE = 0.1
+        self.ENV_NOISE = 0.01
 
         # Simulator specific attributes
+        self.sim_timer = 0
+        self.response_delay = 25    # Delay time in microseconds
         self.faults = True
         self.msg_list = []
         self.neutrons_on = False
@@ -105,6 +107,9 @@ class GenSimulator:
         self.getter_current_ramping = False
         self.start_time = 0
         self.orig_seconds = self.run_seconds
+
+        # NULL cmd flags
+        self.nulls = {}
 
         def mf_method_factory(name, i):
             """
@@ -213,6 +218,13 @@ class GenSimulator:
 
     def exec_func(self):
         cmd = self.msg_list.pop(0)
+        # Check to see if this command is being voided via the simulator controller
+        if self.nulls.get(cmd, 0) != 0:
+            if self.nulls[cmd] > 0:
+                self.nulls[cmd] -= 1
+            self.msg_list.insert(0, cmd)    # Put name of command onto msg_list for use is send_null method
+            func = getattr(self, 'send_null')
+            return func()
         try:
             func = getattr(self, cmd)
         except AttributeError:
@@ -223,6 +235,7 @@ class GenSimulator:
     def run_simulation(self):
         import re
         import socket
+        import time
 
         resp_list = []
 
@@ -241,7 +254,8 @@ class GenSimulator:
             respstr = f'{seq} {message}#{chk[2:].zfill(2)}\r'
             # respstr = f'{seq}{message}#{chk}\r\x00'
             respbytes = respstr.encode('utf-8')  # Convert string to byte object
-            # print(f'Sending {respbytes} to {addr}')
+            if self.debug:
+                print(f'Sending {respbytes} to {addr}')
             out_sock.sendto(respbytes, (addr, self.gen_out_port))
 
         def generate_checksum(message):
@@ -256,7 +270,6 @@ class GenSimulator:
             seq, self.msg_list = strip_msg(data)
             if self.debug:
                 print(f'Received : {seq} : {self.msg_list} extracted from {data}')
-            #time.sleep(0.05)  # Delay response from command just a bit
             resp_list.clear()
             while len(self.msg_list) > 0:
                 resp_list.append(self.exec_func())
@@ -264,7 +277,13 @@ class GenSimulator:
                 resp = ' '.join(resp_list)
             else:
                 resp = resp_list[0]
-            send_msg(resp, addr[0], seq)
+
+            # Throttle our responses a bit
+            if time.perf_counter() - self.sim_timer > self.response_delay / 1e6:
+                self.sim_timer = time.perf_counter()
+                send_msg(resp, addr[0], seq)
+
+            # Service the generator itself
             self.svc_gen_state()
             self.svc_accel_voltage()
             self.svc_accel_current()
@@ -410,6 +429,16 @@ class GenSimulator:
             0
         """
         return '0'
+
+    def send_null(self):
+        """
+        Method to return NULL character
+        :return:
+            \00
+        """
+        print(f'NULL being returned in response to cmd : {self.msg_list.pop(0)}')
+        return '\00'    # Null
+
 
     def C(self):
         """

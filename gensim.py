@@ -43,6 +43,15 @@ while True:
             # Set a fault word
             setattr(mini, f'fault_{cmd[1]}', int(cmd[2], 0))
 
+    elif cmd[0] == 'null':
+        if len(cmd) < 2:
+            cmd.append('?')
+        if cmd[1] == '?' or len(cmd) != 3:
+            print('null : Command to set a given command response to null for one or more iterations.')
+            print('usage: null <cmd> <iterations>. If iterations = -1, repeat forever')
+        else:
+            mini.nulls[cmd[1]] = int(cmd[2])
+
     elif cmd[0] == 'set':
         parm = cmd[2]
         if parm.find('.') == -1:
