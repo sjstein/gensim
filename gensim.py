@@ -1,6 +1,12 @@
 import simulator
 import threading
+import socket
 import time
+
+myip = '192.168.1.121'
+myport = 6001
+clientport = 6002
+
 
 mini = simulator.GenSimulator()
 
@@ -11,13 +17,21 @@ sim_thread = threading.Thread(target=mini.run_simulation, name='GeneratorSim', d
 print(f'Firing off thread: {sim_thread}')
 sim_thread.start()
 
+
+# Set up listener
+in_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+in_sock.bind((myip, myport))
+print(f'Opening port {myport} to socket: {in_sock}')
+
+def send_to_client(addr, msg):
+    out_sock.sendto(msg.encode('utf-8'), (addr, clientport))
+
 while True:
-    cmd = input('sim: ').split(' ')
-    if cmd[0] == 'sah':
-        mini.amp_hours = int(cmd[1])
-    elif cmd[0] == 'sh':
-        mini.run_hours = int(cmd[1])
-    elif cmd[0] == 'debug':
+    data, addr = in_sock.recvfrom(1024)  # BLOCKING READ
+    cmd = data.decode('UTF-8').split()
+    # print(f'Received {cmd} from {addr}')
+    if cmd[0] == 'debug':
         if cmd[1] == 'on':
             mini.debug = True
         else:
@@ -25,20 +39,22 @@ while True:
     elif cmd[0] == 'flt':
         if len(cmd) < 2:
             # Display all fault words
-            print(f'Faults = {str.format("0x{:04X}", int(hex(mini.fault_1), 16))} '
-                  f'{str.format("0x{:04X}", int(hex(mini.fault_2), 16))} '
-                  f'{str.format("0x{:04X}", int(hex(mini.fault_3), 16))} '
-                  f'{str.format("0x{:04X}", int(hex(mini.fault_4), 16))} '
-                  f'{str.format("0x{:04X}", int(hex(mini.fault_5), 16))} '
-                  f'{str.format("0x{:04X}", int(hex(mini.fault_6), 16))} ')
+            resp = (f'Faults = {str.format("0x{:04X}", int(hex(mini.fault_1), 16))} '
+                   f'{str.format("0x{:04X}", int(hex(mini.fault_2), 16))} '
+                   f'{str.format("0x{:04X}", int(hex(mini.fault_3), 16))} '
+                   f'{str.format("0x{:04X}", int(hex(mini.fault_4), 16))} '
+                   f'{str.format("0x{:04X}", int(hex(mini.fault_5), 16))} '
+                   f'{str.format("0x{:04X}", int(hex(mini.fault_6), 16))} ')
+            send_to_client(addr[0], resp)
         elif len(cmd) < 3:
             if cmd[1] == '?':
-                print('Usage: flt <opt:num> <opt:val>\n Display or set fault values.')
+                resp = 'Usage: flt <opt:num> <opt:val>\n Display or set fault values.'
             else:
                 # Display a single fault word
                 attr = f'fault_{cmd[1]}'
                 word = getattr(mini, attr)
-                print(f'{str.format("0x{:04X}", int(hex(mini.fault_1), 16))}')
+                resp = f'{str.format("0x{:04X}", int(hex(mini.fault_1), 16))}'
+            send_to_client(addr[0], resp)
         else:
             # Set a fault word
             setattr(mini, f'fault_{cmd[1]}', int(cmd[2], 0))
@@ -47,8 +63,9 @@ while True:
         if len(cmd) < 2:
             cmd.append('?')
         if cmd[1] == '?' or len(cmd) != 3:
-            print('null : Command to set a given command response to null for one or more iterations.')
-            print('usage: null <cmd> <iterations>. If iterations = -1, repeat forever')
+            resp = (f'null : Command to set a given command response to null for one or more iterations.\n'
+                    'usage: null <cmd> <iterations>. If iterations = -1, repeat forever')
+            send_to_client(addr[0], resp)
         else:
             mini.nulls[cmd[1]] = int(cmd[2])
 
@@ -61,13 +78,25 @@ while True:
         try:
             setattr(mini, cmd[1], val)
         except AttributeError:
-            print('Usage: set <attribute name> <attribute value>')
+            resp = 'Usage: set <attribute name> <attribute value>'
+            send_to_client(addr[0], resp)
     elif cmd[0] == 'print':
         try:
-            print(f'{cmd[1]} = {getattr(mini, cmd[1])}')
+            resp = f'{cmd[1]} = {getattr(mini, cmd[1])}'
+            send_to_client(addr[0], resp)
         except AttributeError:
-            print('Usage: print <attribute name>')
+            resp = 'Usage: set <attribute name> <attribute value>'
+            send_to_client(addr[0], resp)
     elif cmd[0] == 'quit':
         exit()
+    elif cmd[0] == 'exec':
+        try:
+            #rval = eval(f'mini.{cmd[1]}()')
+            func = getattr(mini, cmd[1])
+            rval = func()
+            resp = f'{cmd[1]} : {rval}'
+            send_to_client(addr[0], resp)
+        except AttributeError:
+            resp = 'Usage: exec <method name>'
+            send_to_client(addr[0], resp)
     cmd = None
-

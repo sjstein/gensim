@@ -26,6 +26,7 @@ class GenSimulator:
         self.fault_5 = 0x00
         self.fault_6 = 0x00
         self.getter_current = 0.0
+        self.getter_voltage = 4.0
         self.high_voltage = 0
         self.input_emf = 26
         self.pulse_duty_cycle = 20
@@ -38,10 +39,13 @@ class GenSimulator:
         self.pulse3_delay = 0
         self.pulse3_width = 0
         self.run_seconds = 0
+        self.source_voltage = 2000
         self.shutdown_time = 0
         self.system_locked = True
         self.tube_pres = 120
         self.tube_temp = 26
+        self.host_interlock_char = '!'
+        self.serial_interlock_enabled = False
 
         # Device constants
         if gen_type == 'MINI':
@@ -107,6 +111,7 @@ class GenSimulator:
         self.getter_current_ramping = False
         self.start_time = 0
         self.orig_seconds = self.run_seconds
+        self.socket_timeout = 2.0
 
         # NULL cmd flags
         self.nulls = {}
@@ -114,7 +119,6 @@ class GenSimulator:
         def mf_method_factory(name, i):
             """
             Factory method to create class (M)onitor (F)ault methods when instantiated.
-
             :param name: Name to give the instantiated method
             :param i: Fault word number
             :return: Entrypoint to instantiated method
@@ -122,16 +126,10 @@ class GenSimulator:
             def MFn_template():
                 """
                 Command: Monitor Fault word n
-
                 Function: Returns the fault status word.
-
                 Details: This command returns the specific bitmapped decimal fault word (16 bits),
                 corresponding to fault word n. See generator documentation for details on fault words
-
-                Attribute: fault_n
-
-                :return:
-                    (int) a
+                :return: (int) a
                 """
                 MFn_template.__name__ = name
                 try:
@@ -141,10 +139,44 @@ class GenSimulator:
                     raise e
             return MFn_template
 
+        def rp_method_factory(name, i, p):
+            """
+            Factory method to create (R)ead (P)ulse methods when instantiated.
+            :param name: Name to give the instantiated method
+            :param i: Pulse number (int)
+            :param p: Parameter type (D)elay or (W)idth
+            :return: Entrypoint to instantiated method
+            """
+
+            def RPnp_template():
+                """
+                Command: Read Pulse n Delay / Width
+                Function: Sets the pulse n delay or width in microseconds.
+                Details: This command allows the user to set the pulse n delay or width.
+                No bounds checking is done.
+                Inputs: xxx
+                :return:
+                   xxx.xxx (?????)
+                """
+                RPnp_template.__name__ = name
+                if p == 'D':
+                    try:
+                        return str(getattr(self, f'pulse{i}_delay'))
+                    except Exception as e:
+                        print(f'Exception in generated function : {name}')
+                        raise e
+                else:
+                    try:
+                        return str(getattr(self, f'pulse{i}_width'))
+                    except Exception as e:
+                        print(f'Exception in generated function : {name}')
+                        raise e
+
+            return RPnp_template
+
         def sp_method_factory(name, i, p):
             """
             Factory method to create (S)et (P)ulse methods when instantiated.
-
             :param name: Name to give the instantiated method
             :param i: Pulse number (int)
             :param p: Parameter type (D)elay or (W)idth
@@ -154,21 +186,14 @@ class GenSimulator:
             def SPnp_template():
                 """
                 Command: Set Pulse n Delay / Width
-
                 Function: Sets the pulse n delay or width in microseconds.
-
                 Details: This command allows the user to set the pulse n delay or width.
                 No bounds checking is done.
-
                 Inputs: xxx
-
-                Attribute: pulse1_delay
-
                 :return:
                    xxx.xxx (?????)
                 """
                 SPnp_template.__name__ = name
-                #print(f'Inside {SPnp_template.__name__} with msg: {self.msg_list}')
                 try:
                     if p == 'D':
                         val = float(self.msg_list.pop(0))
@@ -183,12 +208,14 @@ class GenSimulator:
             return SPnp_template
 
         # Create methods based on factory templates
-        # SP methods
+        # Pulse methods (RP, SP)
         for i in range(1, 4):
-            for p in 'DW':
-                name = f'SP{i}{p}'
-                setattr(self, name, sp_method_factory(name, i, p))
-        # MF methods
+            for t in ['SP', 'RP']:
+                for p in 'DW':
+                    name = f'{t}{i}{p}'
+                    setattr(self, name, eval(f'{t.lower()}_method_factory(name, i, p)'))
+
+        # Fault methods (MF)
         for i in range(1, 7):
             name = f'MF{i}'
             setattr(self, name, mf_method_factory(name, i))
@@ -217,12 +244,16 @@ class GenSimulator:
         return random.random() * noise
 
     def exec_func(self):
+        """
+        Description: Utilizing msg_list stack, pop off first element and return reference to corresponding method
+        :return: function (reference)
+        """
         cmd = self.msg_list.pop(0)
         # Check to see if this command is being voided via the simulator controller
         if self.nulls.get(cmd, 0) != 0:
             if self.nulls[cmd] > 0:
                 self.nulls[cmd] -= 1
-            self.msg_list.insert(0, cmd)    # Put name of command onto msg_list for use is send_null method
+            self.msg_list.insert(0, cmd)    # Put name of command onto msg_list for use in send_null method
             func = getattr(self, 'send_null')
             return func()
         try:
@@ -233,13 +264,19 @@ class GenSimulator:
         return func()
 
     def run_simulation(self):
+        """
+        description: Main simulation engine. Accepts and responds to UDP commands and affects simulation parameters.
+        :return: n/a
+        """
         import re
         import socket
         import time
 
         resp_list = []
+        sock_timeout = self.socket_timeout
 
         in_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        in_sock.settimeout(sock_timeout)     # How long to wait for a message before exception
         out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         in_sock.bind((self.gen_ip_num, self.gen_inp_port))
 
@@ -266,22 +303,24 @@ class GenSimulator:
                                             # Using uppercase to deal with strange client requirement
 
         while True:
-            data, addr = in_sock.recvfrom(1024)  # BLOCKING READ
-            seq, self.msg_list = strip_msg(data)
-            if self.debug:
-                print(f'Received : {seq} : {self.msg_list} extracted from {data}')
-            resp_list.clear()
-            while len(self.msg_list) > 0:
-                resp_list.append(self.exec_func())
-            if len(resp_list) > 1:
-                resp = ' '.join(resp_list)
-            else:
-                resp = resp_list[0]
-
-            # Throttle our responses a bit
-            if time.perf_counter() - self.sim_timer > self.response_delay / 1e6:
-                self.sim_timer = time.perf_counter()
-                send_msg(resp, addr[0], seq)
+            try:
+                data, addr = in_sock.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
+                seq, self.msg_list = strip_msg(data)
+                if self.debug:
+                    print(f'Received : {seq} : {self.msg_list} extracted from {data}')
+                resp_list.clear()
+                while len(self.msg_list) > 0:
+                    resp_list.append(self.exec_func())
+                if len(resp_list) > 1:
+                    resp = ' '.join(resp_list)
+                else:
+                    resp = resp_list[0]
+                # Throttle our responses a bit
+                if time.perf_counter() - self.sim_timer > self.response_delay / 1e6:
+                    self.sim_timer = time.perf_counter()
+                    send_msg(resp, addr[0], seq)
+            except socket.timeout:
+                print(f'[{time.strftime("%H:%M:%S",time.localtime())}] UDP receive timeout')
 
             # Service the generator itself
             self.svc_gen_state()
@@ -291,7 +330,13 @@ class GenSimulator:
             self.svc_environment()
 
     def svc_gen_state(self):
+        """
+        Description: Main state-machine for simulation.
+        :return:
+        """
         import time
+
+        self.check_system_state()
 
         if self.system_state & self.SYSTEM_STATE_FAULTED == self.SYSTEM_STATE_FAULTED:
             self.neutrons_starting = self.neutrons_ramping_up = self.neutrons_on = False
@@ -341,6 +386,10 @@ class GenSimulator:
         return
     
     def svc_accel_current(self):
+        """
+        Description: Services the accelerator current parameter
+        :return:
+        """
         if self.accel_current > self.accel_current_sp:
             self.accel_current -= self.analog_noise(self.ACCEL_CURRENT_NOISE)
         else:
@@ -350,6 +399,10 @@ class GenSimulator:
         return
 
     def svc_accel_voltage(self):
+        """
+        Description: Services the accelerator voltage parameter
+        :return:
+        """
         if self.accel_voltage_ramping:
             self.accel_voltage += self.analog_noise(5)
             if abs(self.accel_voltage_sp - self.accel_voltage < 6):
@@ -363,6 +416,10 @@ class GenSimulator:
         return
 
     def svc_getter_current(self):
+        """
+        Description: Services the getter current parameter
+        :return:
+        """
         if self.getter_current_sp == 0:
             return
         if self.system_state == self.SYSTEM_STATE_RUNNING:
@@ -378,6 +435,10 @@ class GenSimulator:
         return
 
     def svc_environment(self):
+        """
+        Description: Services the generator environmental parameters
+        :return:
+        """
         import time
 
         for parm in ['IDEAL_BOARD_TEMP', 'IDEAL_TUBE_PRES', 'IDEAL_TUBE_TEMP', 'IDEAL_INPUT_EMF']:
@@ -396,80 +457,95 @@ class GenSimulator:
 
     def check_system_state(self):
         """
-        Table 5–6. System States
-        Number State Meaning
-        $0001 INIT State during boot up
-        $0002 Reserved Reserved for expansion
-        $0004 Reserved Reserved for expansion
-        $0008 STANDBY System is in standby mode for quick restart to neutron production
-        $0010 RUNNING System has met all criteria and is producing neutrons
-        $0020 FAULTED There is a fault in the system that will not allow the system to run
-        $0040 SSHV Soft Start High Voltage – system is starting high voltage supplies
-        $0080 MCHG Mode Change
-        $0100 IDLE System is in idle state – no faults – waiting for user command
-        $0200 LAMP System is starting the safety lamp and waiting to make sure that it sees light and current
-        $0400 BMST Beam Start – system is setting the reservoir current to a high value to kick start the beam current
-        $0800 SSBM Soft Start Beam – system is starting the control loop to control the beam current with the reservoir
-        $1000 SSBH Soft Start Beam Hot – system is starting the control loop to control the beam current with
-            the reservoir from a standby state
-        $2000 SDBM Soft Down Beam – system is shutting down beam current
-        $4000 SDHV Soft Down High Voltage – system is shutting down the high voltage
-        $8000 TEST Special test mode for internal use
-
-        :return:
+        Description: Checks for any faults and adjusts system state accordingly
         """
         if self.fault_1 + self.fault_2 + self.fault_3 + self.fault_4 + self.fault_5 + self.fault_6 > 0:
-            self.system_state = self.system_state | self.SYSTEM_STATE_FAULTED
+            self.faults = True  # This should be set by a separate fault monitoring task
+            self.system_state = self.SYSTEM_STATE_FAULTED  # This should be set by a separate fault monitoring task
+            self.accel_current = self.accel_current_sp = 0
+            self.accel_voltage = self.accel_voltage_sp = 0
+            self.getter_current_sp = self.getter_current = 0
 
     def null_cmd(self):
         """
         Entrypoint for all unknown commands
 
-        :return:
-            0
+        :return: 0
         """
         return '0'
 
     def send_null(self):
         """
         Method to return NULL character
-        :return:
-            \00
+
+        :return: \00
         """
         print(f'NULL being returned in response to cmd : {self.msg_list.pop(0)}')
         return '\00'    # Null
 
-
     def C(self):
         """
         Command: Clear
-
         Function: Clears all of the current fault conditions.
 
-        Details: This command allows the user to clear any faults that have
-        occurred. If fault conditions that can be detected still exist,
-        they will be checked the next time through the real time loop.
-        This means that it may take 10 to 20 microseconds after the faults have
-        been cleared to read any faults that may still exist.
-
-        Attribute: faults, system_state
-
-        :return:
-            0
+        :return: 0
         """
-        self.faults = False                             # This should be set by a supervisor function
-        self.system_state = self.SYSTEM_STATE_IDLE      # This should be set by a supervisor function
-        self.fault_1 = 0                                # This should be set by a supervisor function
+        self.faults = False
+        self.system_state = self.SYSTEM_STATE_IDLE
+        self.fault_1 = 0
+        return '0'
+
+    def IC(self):       # Check via packet capture
+        """
+        Command: Interlock Character
+        Function: Receives the interlock character that keeps the serial port
+        interlock enabled.
+        Input : '[ (host interlock character)'
+        Details: This command receives the interlock character. Once the
+        interlock character is received, the interlock timeout is reset to
+        16 seconds. If the interlock character is not received (via the
+        “IC [” command from the remote system) within 16 seconds
+        of the interlock being enabled, the system will time out and
+        the interlock will open, initiating a fault condition. Also, the
+        remote system processor must respond with a “]” or it will
+        time out. Printable ASCII characters are used to facilitate
+        testing and debugging. Once the interlock is opened after
+        being enabled, it can only be re-enabled by entering the
+        “IR<rcode>” command or cycling power to the system.
+
+        :return: '] (remote interlock character)'
+        """
+        val = self.msg_list.pop(0)
+        if val != '[':
+            print(f'In IC function, expected \'[\' but found \'{val}\'')
+            self.msg_list.pop(0)    # Flush out character from cmd stack
+        else:
+            self.host_interlock_char = self.msg_list.pop(0)
+        return f'] {self.host_interlock_char}'
+
+    def IE(self):
+        """
+        Command: Interlock Enable
+        Function: Enables the serial port interlock circuit.
+        Details: This command enables the serial port interlock. Once
+        enabled, the interlock is made for 16 seconds. If the interlock
+        character is not received (via the “IC [” command) at least
+        once every two seconds from that time on, the system will
+        time out and the interlock will open, generating a fault. Once
+        the interlock has been opened after being enabled, it can only
+        be re-enabled by cycling power to the system or entering the
+        “IR<rcode>” command.
+
+        :return: '0'  ok
+        """
+        self.serial_interlock_enabled = True
         return '0'
 
     def IM(self):
         """
         Command: Idle Mode
-
-        Returns (Computer Mode): 0 or 2
-
+        Returns: 0 or 2
         Function: Puts the system in idle mode.
-
         Details: This command is identical to entering the “N 0” command.
         The system initiates an orderly shut down and returns to the
         idle mode.
@@ -484,109 +560,126 @@ class GenSimulator:
         self.neutrons_ramping_down = True
         return '0'
 
+    def IN(self):       # Check via packet capture
+        """
+        Command: Idle Normal
+        Returns: 0, 1 or 2
+        Function: Puts the system in idle mode.
+        Details: This command restarts the ion source and allows neutron
+        production to restart quickly from standby mode. This
+        command is only valid if the system is in standby mode
+
+        :return:
+            '0' ok
+            '1' illegal transition from current state
+            '2' fault
+        """
+
+        self.neutrons_ramping_down = True
+        return '0'
+
+    def IR(self):  # Check via packet capture
+        """
+        Command: Interlock Reset
+        Function: Disables and resets the serial port interlock circuit.
+        Input : '<PASSWORD>'
+        Details: This command disables the serial port interlock, removes any
+        high voltage at the tube, and resets the enable for the serial
+        port interlock. The purpose of this command is to allow a
+        reset of the serial port interlock without cycling power to the
+        system. Once this command is entered, the “IE” command
+        will need to be executed to re-enable the serial port interlock.
+        The faults will then need to be cleared and the interlock
+        character (“IC [”) provided in order to operate the system.
+        The passcode is available from Thermo and may change with
+        revisions.
+
+        :return:
+            '0'
+        """
+        val = self.msg_list.pop(0)
+        # Do something with this val to verify proper password??
+        return '0'
+
+    def IS(self):  # Check via packet capture
+        """
+        Command: Idle Standby
+        Returns: 0, 1 or 2
+        Function: Puts the system in standby mode.
+        Details: This command removes the voltage from the ion source and
+        will maintain the reservoir current at the system value needed
+        to maintain the beam current set by the user. It will also leave
+        the high voltage at the user configured setpoint. The system
+        will still produce a small number of neutrons. This command
+        allows the system to be restarted quickly. This command is
+        only valid if the system is in the RUNNING state.
+
+        :return:
+            '0' ok
+            '1' illegal transition from current state
+            '2' fault
+        """
+        self.neutrons_ramping_down = True
+        return '0'
+
     def MAC(self):
         """
         Command: Monitor Accelerator Current
-
         Function: Returns the current reading of the average accelerator
         current in microamperes
 
-        Details: This command returns the current reading of average
-        accelerator current. This reading is made from the HVPS.
-        The value while the system is running is typically 20 to
-        70 microamps. Neutron tube life is proportional to the beam current
-        required. This reading is identical to the beam current for the
-        neutron tube and controller configuration.
-
-        Attribute: accel_current
-
-        :return:
-            xxx.xx
+        :return: self.accel_current
         """
         return f'{self.accel_current:.2f}'
 
     def MAH(self):
         """
         Command: Monitor Amp-Hours
-
         Function: Returns the current micro-amp-hr total of the neutron tube.
 
-        Details: This command returns the current total number of micro-amp-hrs the
-        neutron tube has spent in the running state. This is a better
-        number than total time because neutron tube life increases at
-        lower beam currents.
-
-        Attribute: amp_hours
-
         :return:
-            xxx.xxx
+            self.amp_hours
         """
         return f'{self.amp_hours:.3f}'
 
     def MAV(self):
         """
         Command: Monitor Accelerator Voltage
-
         Function: Returns the current voltage reading of the HVPS in kilovolts.
 
-        Details: This command returns the current voltage reading of the
-        HVPS. When this value is set, it will take some time to ramp
-        up to the value set. [If the voltage does not reach the preprogrammed
-        threshold (typically 60 kV) the system will shut down.]
-
-        Attribute: accel_voltage
-
         :return:
-            xxx.x
+            self.accel_voltage
         """
         return f'{self.accel_voltage:.1f}'
 
     def MBC(self):
         """
         Command: Monitor Beam Current
-
         Function: Returns the current reading of the average accelerator
         current in microamperes
 
-        Details: This command returns the current reading of average
-        accelerator current. This reading is made from the HVPS.
-        The value while the system is running is typically 20 to
-        70 microamps. Neutron tube life is proportional to the beam current
-        required. This reading is identical to the accelerator current.
-
-        Attribute: accel_current
-
         :return:
-            xxx.xx
-
-        Returns float
+            self.accel_current
         """
         return f'{self.accel_current:.2f}'
 
     def MEI(self):
         """
         Command: Monitor EMF Input
-
         Function: Returns the input voltage to the generator electronics (nominal 24V).
 
-        Attribute: input_emf
-
         :return:
-            xxx.x
+            self.input_emf
         """
         return f'{self.input_emf:.1f}'
 
     def MFA(self):
         """
         Command: Monitor Fault Analysis
-
         Function: Returns the 6 bytes containing the fault status.
-
         Details: This command returns the 6 bitmapped hexadecimal fault
         words (16 bits each), separated by spaces, containing the
         status of all of the system fault conditions. See generator documentation for details on fault words
-
-        Attributes: fault_1, fault_2, fault_3, fault_4, fault_5, fault_6
 
         :return:
             0xfault_1 0xfault_2 0xfault_3 0xfault_4 0xfault_5 0xfault_6
@@ -602,19 +695,10 @@ class GenSimulator:
     def MFG(self):
         """
         Command: Monitor Fault Global
-
         Function: Returns a value to indicate if any faults have occurred.
 
-        Details: This command allows the fault status to be easily monitored
-        without requiring that all of the fault words be displayed all of
-        the time. If there is a fault, the user must determine which
-        fault condition(s) exist by entering the “MFA” command or
-        by reading each individually bitmapped fault word. If a “0” is
-        returned, there are no fault conditions in the system; if a “1”
-        is returned, there are fault conditions in the system.
-
         :return:
-            (int) a
+            '0' if no faults, '1' if any faults
         """
         if self.faults:
             return '1'
@@ -624,96 +708,140 @@ class GenSimulator:
     def MH(self):
         """
         Command: Monitor Hours
-
         Function: Returns the amount of time the neutron tube has spent in the
         running state in seconds.
 
-        Details: This command returns the amount of time the neutron tube
-        has spent in the running state. The time is logged for tube life
-        only during the time the tube spends in the running state.
-        Leading zeros are suppressed when the data is returned. This
-        allows the user to determine if a tube is due for maintenance.
-
-        Attribute: run_seconds
-
         :return:
-            (int) a
+            self.run_seconds
         """
         return f'{self.run_seconds}'
+
+    def MI(self):
+        """
+        Command: Monitor Interlock
+        Function: Displays the status of the interlocks.
+        Details: This command displays whether the pressure switch,
+        electrical switch and serial port interlocks are open or closed.
+        This command differs from the “MFA” command in that it
+        will display if the serial port interlock is bypassed and if the
+        gas pressure is low even though the interlock is closed. In
+        computer mode, a bitmapped hexadecimal byte is returned. If
+        a “0” is read, all of the interlocks are closed; if anything other
+        than a “0” is read, one or more of the interlocks is open. The
+        bitmapping for the first three bits is the same as the first byte
+        in the fault status, but it only contains the interlock.
+        Therefore, bit 0 is the pressure switch interlock; bit 1 is the
+        electrical switch interlock; and bit 2 is the serial port
+        interlock.
+        0 Relay Interlock (0 = closed) (HVPS Power)
+        1 User Interlock Status (0 = closed)
+        2 Serial Interlock Status (0 = closed)
+        3 Serial Interlock Bypassed
+        4 Reserved
+        5 Reserved
+        6 Reserved
+        7 Reserved
+        8 Reserved
+
+        :return:
+            (hex) aa
+        """
+        print('Warning - MI not implemented properly yet')
+        return f'0x00'
 
     def MP(self):
         """
         Command: Monitor Process
-
         Function: Returns the current state of the system in decimal.
-
         Details: This command displays the current state of the system on the
         DNC board. Please refer to Table 5-13, System States, for the
         list of possible system states, which are bitmapped.
 
-        Attribute: system_state
-
         :return:
-            (int) a
+            self.system_state
         """
         return f'{self.system_state}'
 
     def MRC(self):
         """
         Command: Monitor Reservoir Current
-
-        Function: Returns the current reading of the reservoir current in
-        amperes.
-
-        Details: This command displays the reading of the reservoir current.
-        The reservoir (sometimes called the “filament” or “getter”)
-        controls the beam current. There is a closed loop that controls
-        the beam current by controlling the amount of reservoir
-        current. When the tube is not running, the reservoir is in idle
-        mode. In the idle mode, the reservoir is typically set to about
-        0.5 A. In the running mode, the reservoir current will
-        typically be in the range of 1 to 2.5 A.
-
-        Attribute: getter_current
+        Function: Returns the reading of the reservoir current in amperes.
 
         :return:
-            xx.x
+            self.getter_current
         """
         return f'{self.getter_current:.1f}'
+
+    def MRR(self):
+        """
+        Command: Monitor Reservoir Resistance
+        Function: Returns the calculated resistance of the getter
+
+        :return:
+            self.getter_voltage / self.getter_current
+        """
+        val = self.getter_voltage / self.getter_current
+        return f'{val:.1f}'
+
+    def MRV(self):
+        """
+        Command: Monitor Reservoir Voltage
+
+        :return:
+            self.getter_voltage
+        """
+        return f'{self.getter_voltage:.1f}'
+
+    def MSV(self):
+        """
+        Command: Monitor Source Voltage
+
+        :return:
+            self.source_voltage
+        """
+        return f'{self.source_voltage:.1f}'
 
     def MTC(self):
         """
         Command: Monitor Temperature Controller
-
         Function: Returns the current reading of the controller board
         temperature in Celsius.
 
-        Details: This command displays the current reading of the controller
-        board temperatures.
-
-        Attribute: board_temp
-
         :return:
-            xx.xx
+            self.board_temp
         """
         return f'{self.board_temp:.2f}'
 
-    def MTP(self):
+    def MTD(self):
         """
-        Command: Monitor Tube Pressure
-
-        Function: Returns the current reading of the neutron tube pressure in
-        pounds per square inch (psi).
-
-        Details: This command displays the current reading of the neutron
-        tube pressure.
-
-        Attribute: tube_pres
+        Command: Monitor Tube Density
 
         :return:
             xxx.x
         """
+        print('MTD not implemented yet')
+        return '1'
+
+    def MTP(self):
+        """
+        Command: Monitor Tube Pressure
+        Function: Returns the current reading of the neutron tube pressure in
+        pounds per square inch (psi).
+
+        :return:
+            self.tube_pres
+        """
         return f'{self.tube_pres:.1f}'
+
+    def MTS(self):
+        """
+        Command: Monitor Temperature Source
+
+        :return:
+            xxx.x
+        """
+        print('MTS not implemented yet')
+        return f'{self.board_temp:.1f}'
 
     def MTT(self):
         """
@@ -722,24 +850,15 @@ class GenSimulator:
         Function: Returns the current reading of the accelerator assembly
         temperature in Celsius.
 
-        Details: This command displays the current reading of the neutron
-        tube temperature.
-
-        Attribute: tube_temp
-
         :return:
-            xx.xx
+            self.tube_temp
         """
         return f'{self.tube_temp:.2f}'
 
     def N(self):
         """
         Command: Neutrons xx.xx
-
         Inputs: xx (setting of the HVPS)
-
-        Returns (Terminal Mode): 
-        
         Function: This command initiates a start-up the system and slowly
         ramps up the high voltage to the specified value (in
         kilovolts). It will also stop the system if a number is set
@@ -757,9 +876,7 @@ class GenSimulator:
         is a fault condition in the system, it must be cleared before
         this command is effective. This value is typically set to
         between 70 and 90 kV.
-        
-        Attributes: accel_voltage, neutrons_on
-        
+
         :return:
             '0'  ok
             '1'  out of range
@@ -778,10 +895,8 @@ class GenSimulator:
     def Q(self):
         """
         Command: Quit
-
         Function: Initiates a hard shut down of the neutron tube (i.e., user
         generated fault).
-
         Details: This command shuts down the neutron tube as quickly as
         possible. This is different than the normal shut down using
         the “N=0” or “IM” commands in that it will not shut down in
@@ -802,55 +917,60 @@ class GenSimulator:
         self.fault_1 = self.fault_1 | 0x80
         return '0'
 
+    def RBV(self):
+        """
+        Command: Read Beam Value
+
+        :return:
+
+        """
+        print('RBV not implemented yet')
+        return f'TUBE{self.accel_current}'
+
+    def RCAR(self):     # Check against packet logs
+        """
+        Command: Returns the current revision of the HVPS.
+
+        :return:
+            self.tube_str
+        """
+        print('RCAR not implemented yet')
+        return f'TUBE{self.tube_str}'
+
+    def RCDA(self):
+        print('RCDA not implemted yet')
+        return 'NA'
+
+    def RCDR(self):
+        print('RCDR not implemted yet')
+        return 'NA'
+
+    def RCFR(self):
+        print('RCFR not implemented yet')
+        return 'NA'
+
+    def RCXR(self):
+        print('RCXR not implemented yet')
+        return 'NA'
+
     def RCAT(self):
         """
         Command: Read Configuration Accelerator Tube
-
         Function: Returns the serial number of the current tube in the
         accelerator.
 
-        Details: The command displays the tube serial number with an
-        appended “DD” or “DT”. DD indicates a Deuterium only
-        loaded tube (2.4MeV); DT indicates
-
-        Attribute: tube_str
-
         :return:
-            str
+            self.tube_str
         """
         return f'TUBE{self.tube_str}'
 
-    def RP1D(self):
-        """
-        Command: Read Pulse 1 Delay
+    def REA(self):
+        print('REA not implemented yet')
+        return 'na'
 
-        Function: Returns the current setting of the delay on the DELAY n
-        pulse in microseconds.
-
-        Details: This command displays current setting on the Delay 1 pulse.
-
-        Attribute: pulse1_delay
-
-        :return:
-            xx.xxx
-        """
-        return f'{self.pulse1_delay:.3f}'
-
-    def RP1W(self):
-        """
-        Command: Read Pulse 1 Width
-
-        Function: Returns the current setting of the width on the DELAY n
-        pulse in microseconds.
-
-        Details: This command displays current setting on the Delay 1 width.
-
-        Attribute: pulse1_width
-
-        :return:
-            xx.xxx
-        """
-        return f'{self.pulse1_width:.3f}'
+    def REM(self):
+        print('REM not implemented yet')
+        return 'na'
 
     def RPD(self):
         """
@@ -892,6 +1012,22 @@ class GenSimulator:
         """
         return f'{self.pulse_freq}'
 
+    def RUC(self):
+        print('RUC not implemented yet')
+        return 'NA'
+
+    def RUM(self):
+        print('RUM not implemented yet')
+        return 'NA'
+
+    def RUT(self):
+        print('RUT not implemented yet')
+        return 'NA'
+
+    def RZTC(self):
+        print('RZTC not implemented yet')
+        return 'NA'
+
     def SBV(self):
         """
         Command: Set Beam Value
@@ -915,6 +1051,14 @@ class GenSimulator:
             return '0'
         else:
             return '1'
+
+    def SCDA(self):
+        print('SCDA not implemented yet')
+        return 'na'
+
+    def SEA(self):
+        print('SEA not implemented yet')
+        return 'na'
 
     def SPD(self):
         """
@@ -976,6 +1120,14 @@ class GenSimulator:
             # Invalid entry
             return '1'
 
+    def SUC(self):
+        print('SUC not implemented yet')
+        return 'na'
+
+    def SUM(self):
+        print('SUM not implemented yet')
+        return 'na'
+
     def SUT(self):
         """
         Command: Set User Time
@@ -999,6 +1151,10 @@ class GenSimulator:
 
         self.shutdown_time = self.msg_list.pop(0)
         return '0'
+
+    def SZTC(self):
+        print('SZTC not implemented yet')
+        return 'na'
 
     def U(self):
         """
