@@ -780,7 +780,10 @@ class GenSimulator:
         :return:
             self.getter_voltage / self.getter_current
         """
-        val = self.getter_voltage / self.getter_current
+        try:
+            val = self.getter_voltage / self.getter_current
+        except ZeroDivisionError:
+            val = 999999
         return f'{val:.1f}'
 
     def MRV(self):
