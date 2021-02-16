@@ -3,8 +3,8 @@ import socket
 import time
 
 sup_ip = '192.168.1.121'
-my_ip = '192.168.1.99'
-#my_ip = '192.168.1.60'
+#my_ip = '192.168.1.99'
+my_ip = '192.168.1.60'
 sup_port = 6001
 in_port = 6002
 
@@ -256,7 +256,9 @@ ent_attr_tgt.bind('<Return>', set_attribute)
 attr_var.trace("w", callback)
 update_labels()
 window.mainloop()
+exit()
 
+## Below is for interacting direct with simulation engine
 while True:
     cmd = input('Enter command: ')
     cmdbytes = cmd.encode('utf-8')
