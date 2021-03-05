@@ -71,10 +71,13 @@ while True:
 
     elif cmd[0] == 'set':
         parm = cmd[2]
-        if parm.find('.') == -1:
-            val = int(parm)
-        else:
-            val = float(parm)
+        try:
+            if parm.find('.') == -1:
+                val = int(parm)
+            else:
+                val = float(parm)
+        except ValueError:
+            val = parm
         try:
             setattr(mini, cmd[1], val)
         except AttributeError:
