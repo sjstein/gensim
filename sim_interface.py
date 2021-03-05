@@ -3,10 +3,11 @@ import socket
 import time
 
 sup_ip = '192.168.1.121'
-#my_ip = '192.168.1.99'
+#my_ip = '192.168.1.98'
 my_ip = '192.168.1.60'
 sup_port = 6001
 in_port = 6002
+
 
 out_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 in_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -91,11 +92,11 @@ lbl_fault_list = [lbl_fault_1,
 # Entry fields
 ent_null_tgt = tk.Entry(master=fr3, width=5)
 ent_null_tgt.insert(0, '1')
-ent_null_tgt.grid(row=0, column=1, padx=0)
+ent_null_tgt.grid(row=0, column=1, padx=4)
 
-ent_attr_tgt = tk.Entry(master=fr4, width=5)
+ent_attr_tgt = tk.Entry(master=fr4, width=7)
 ent_attr_tgt.insert(0, '0')
-ent_attr_tgt.grid(row=0, column=1, padx=0)
+ent_attr_tgt.grid(row=0, column=1, padx=4)
 
 # Buttons
 btn_null = tk.Button(master=fr3, text="SET NULL", command=exec_null)
@@ -149,6 +150,8 @@ attr_list = ['IDEAL_TUBE_PRES',
              'ACCEL_VOLTAGE_NOISE',
              'GETTER_CURRENT_NOISE',
              'ENV_NOISE',
+             'response_delay',
+             'debug'
              ]
 
 # Drop downs
@@ -172,74 +175,76 @@ fr4.grid(row=3, column=0, sticky='W')
 fr5.grid(row=4, column=0, sticky='W')
 
 def update_labels():
-    cmd = 'print accel_current'
-    out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
-    data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
-    rval = float(data.split()[2].decode("utf-8"))
-    lbl_accel_current['text'] = f'Accel Current: {rval:06.2f}'
+    try:
+        cmd = 'print accel_current'
+        out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
+        data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
+        rval = float(data.split()[2].decode("utf-8"))
+        lbl_accel_current['text'] = f'Accel Current: {rval:06.2f}'
 
-    cmd = 'print accel_voltage'
-    out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
-    data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
-    rval = float(data.split()[2].decode("utf-8"))
-    lbl_accel_voltage['text'] = f'Accel Voltage: {rval:06.2f}'
+        cmd = 'print accel_voltage'
+        out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
+        data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
+        rval = float(data.split()[2].decode("utf-8"))
+        lbl_accel_voltage['text'] = f'Accel Voltage: {rval:06.2f}'
 
-    cmd = 'print getter_current'
-    out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
-    data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
-    rval = float(data.split()[2].decode("utf-8"))
-    lbl_getter_current['text'] = f'Getter Current: {rval:04.2f}'
+        cmd = 'print getter_current'
+        out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
+        data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
+        rval = float(data.split()[2].decode("utf-8"))
+        lbl_getter_current['text'] = f'Getter Current: {rval:04.2f}'
 
-    cmd = 'print system_state'
-    out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
-    data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
-    rval = int(data.split()[2].decode("utf-8"))
-    lbl_system_state['text'] = f'System State: {rval}'
+        cmd = 'print system_state'
+        out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
+        data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
+        rval = int(data.split()[2].decode("utf-8"))
+        lbl_system_state['text'] = f'System State: {rval}'
 
-    cmd = 'print faults'
-    out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
-    data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
-    if eval(data.split()[2].decode("utf-8")):
-        lbl_intlk_state['bg'] = '#ff1111'
-        lbl_intlk_state['text'] = f'Interlocks: TRIP'
-    else:
-        lbl_intlk_state['bg'] = '#11ee11'
-        lbl_intlk_state['text'] = f'Interlocks: OK'
+        cmd = 'print faults'
+        out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
+        data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
+        if eval(data.split()[2].decode("utf-8")):
+            lbl_intlk_state['bg'] = '#ff1111'
+            lbl_intlk_state['text'] = f'Interlocks: TRIP'
+        else:
+            lbl_intlk_state['bg'] = '#11ee11'
+            lbl_intlk_state['text'] = f'Interlocks: OK'
 
-    cmd = 'print neutrons_on'
-    out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
-    data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
-    if eval(data.split()[2].decode("utf-8")):
-        lbl_neut_state['bg'] = '#8b008b'
-        lbl_neut_state['text'] = f'Neutrons: ON'
-    else:
-        lbl_neut_state['bg'] = '#eeeeee'
-        lbl_neut_state['text'] = f'Neutrons: OFF'
+        cmd = 'print neutrons_on'
+        out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
+        data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
+        if eval(data.split()[2].decode("utf-8")):
+            lbl_neut_state['bg'] = '#8b008b'
+            lbl_neut_state['text'] = f'Neutrons: ON'
+        else:
+            lbl_neut_state['bg'] = '#eeeeee'
+            lbl_neut_state['text'] = f'Neutrons: OFF'
+    except socket.timeout:
+        print('Socket timeout on UDP request')
 
     for i in range(1, 7):
         cmd = f'print fault_{i}'
         out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
         try:
             data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
-        except socket.timeout:
-            pass
-        rval = int(data.split()[2].decode("utf-8"))
-        if rval > 0:
-            lbl_fault_list[i-1]['bg'] = '#ff0000'
-        else:
-            lbl_fault_list[i - 1]['bg'] = '#eeffee'
-        lbl_fault_list[i-1]['text'] = f'Fault {i}: {rval:016b}'
-
-    window.after(2000, update_labels)
+            rval = int(data.split()[2].decode("utf-8"))
+            if rval > 0:
+                lbl_fault_list[i-1]['bg'] = '#ff0000'
+            else:
+                lbl_fault_list[i - 1]['bg'] = '#eeffee'
+            lbl_fault_list[i-1]['text'] = f'Fault {i}: {rval:016b}'
+        except:
+            print('Socket timeout on UDP request')
+    window.after(1000, update_labels)
 
 
 def callback(*args):
     cmd = f'print {attr_var.get()}'
-    print(f'In callback sending : {cmd}')
+    #print(f'In callback sending : {cmd}')
     out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
     data, addr = in_socket.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
     rval = data.split()[2].decode("utf-8")
-    print(f'In callback with return of {rval}')
+    #print(f'In callback with return of {rval}')
     ent_attr_tgt.delete(0, "end")
     ent_attr_tgt.insert(0, rval)
 
@@ -248,17 +253,17 @@ def set_attribute(*args):
     val = ent_attr_tgt.get()
     cmd = f'set {attr_var.get()} {val}'
     out_socket.sendto(cmd.encode('utf-8'), (sup_ip, sup_port))
-    print(f'Sent cmd: {cmd}')
+    #print(f'Sent cmd: {cmd}')
 
 
+callback()  # Grab the current attribute value
 ent_attr_tgt.bind('<Return>', set_attribute)
-
 attr_var.trace("w", callback)
 update_labels()
 window.mainloop()
 exit()
 
-## Below is for interacting direct with simulation engine
+# Remove exit() above to interact directly with engine after killing GUI
 while True:
     cmd = input('Enter command: ')
     cmdbytes = cmd.encode('utf-8')

@@ -89,11 +89,11 @@ class GenSimulator:
         self.ACCEL_CURRENT_NOISE = 4
         self.ACCEL_VOLTAGE_NOISE = 2
         self.GETTER_CURRENT_NOISE = 0.1
-        self.ENV_NOISE = 0.01
+        self.ENV_NOISE = 0.5
 
         # Simulator specific attributes
         self.sim_timer = 0
-        self.response_delay = 25    # Delay time in microseconds
+        self.response_delay = 100000    # Delay time in microseconds
         self.faults = True
         self.msg_list = []
         self.neutrons_on = False
@@ -271,12 +271,13 @@ class GenSimulator:
         import re
         import socket
         import time
+        import threading
 
         resp_list = []
         sock_timeout = self.socket_timeout
 
         in_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        in_sock.settimeout(sock_timeout)     # How long to wait for a message before exception
+        # in_sock.settimeout(sock_timeout)     # How long to wait for a message before exception
         out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         in_sock.bind((self.gen_ip_num, self.gen_inp_port))
 
@@ -302,6 +303,20 @@ class GenSimulator:
             return hex(~s & 0xff).upper()   # Mask to one byte, invert and return
                                             # Using uppercase to deal with strange client requirement
 
+        def threaded_simulator(shutdown):
+            while not shutdown.is_set():
+                self.svc_gen_state()
+                self.svc_accel_voltage()
+                self.svc_accel_current()
+                self.svc_getter_current()
+                self.svc_environment()
+            return
+
+        shutdown_event = threading.Event()
+        t = threading.Thread(target=threaded_simulator, args=(shutdown_event,))
+        print(f'Starting simulator thread')
+        t.start()
+
         while True:
             try:
                 data, addr = in_sock.recvfrom(1024)  # Will wait for socket.timeout before throwing exception
@@ -311,23 +326,15 @@ class GenSimulator:
                 resp_list.clear()
                 while len(self.msg_list) > 0:
                     resp_list.append(self.exec_func())
-                if len(resp_list) > 1:
-                    resp = ' '.join(resp_list)
-                else:
-                    resp = resp_list[0]
+                resp = ' '.join(resp_list)
                 # Throttle our responses a bit
-                if time.perf_counter() - self.sim_timer > self.response_delay / 1e6:
-                    self.sim_timer = time.perf_counter()
-                    send_msg(resp, addr[0], seq)
+                time.sleep(self.response_delay / 1e6)
+                send_msg(resp, addr[0], seq)
             except socket.timeout:
                 print(f'[{time.strftime("%H:%M:%S",time.localtime())}] UDP receive timeout')
 
-            # Service the generator itself
-            self.svc_gen_state()
-            self.svc_accel_voltage()
-            self.svc_accel_current()
-            self.svc_getter_current()
-            self.svc_environment()
+        shutdown_event.set()
+
 
     def svc_gen_state(self):
         """
@@ -429,9 +436,11 @@ class GenSimulator:
                 self.getter_current += self.analog_noise(self.GETTER_CURRENT_NOISE)  # Wiggle the value a little
         else:
             if self.getter_current > self.getter_current_sp:
-                self.getter_current -= self.analog_noise(self.GETTER_CURRENT_NOISE*.5)  # Wiggle the value a little
+                self.getter_current -= abs(self.getter_current_sp - self.getter_current) * .001
+                #self.getter_current -= self.analog_noise(self.GETTER_CURRENT_NOISE*.5)  # Wiggle the value a little
             else:
-                self.getter_current += self.analog_noise(self.GETTER_CURRENT_NOISE*.5)  # Wiggle the value a little
+                self.getter_current += abs(self.getter_current_sp - self.getter_current) * .001
+                #self.getter_current += self.analog_noise(self.GETTER_CURRENT_NOISE*.5)  # Wiggle the value a little
         return
 
     def svc_environment(self):
@@ -441,6 +450,7 @@ class GenSimulator:
         """
         import time
 
+        # Vary the parameters a bit somewhat randomly
         for parm in ['IDEAL_BOARD_TEMP', 'IDEAL_TUBE_PRES', 'IDEAL_TUBE_TEMP', 'IDEAL_INPUT_EMF']:
             # Not crazy about hard-coding these constants like this^^
             sp = float(getattr(self, parm))
