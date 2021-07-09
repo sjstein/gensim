@@ -1075,9 +1075,9 @@ class GenSimulator:
 
     def SPD(self):
         """
-        Command: Set Pulse Delay
+        Command: Set Pulse Duty
 
-        Function: Sets the source pulse delay to xx in %.
+        Function: Sets the source pulse duty factor to xx in %.
 
         Details: This command allows the user to set the source pulse duty
         cycle, which is the duty cycle of the main source pulse. The
@@ -1088,7 +1088,7 @@ class GenSimulator:
 
         Inputs: xx
 
-        Attribute: pulse_delay
+        Attribute: pulse_duty
 
         :return:
             '0' (cmd OK)
@@ -1096,7 +1096,7 @@ class GenSimulator:
         """
         val = float(self.msg_list.pop(0))
         if val == 100 or (20 <= val <= 50):
-            self.pulse_freq = val
+            self.pulse_duty_cycle = val
             return '0'
         else:
             # Invalid entry
